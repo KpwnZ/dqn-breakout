@@ -3,6 +3,7 @@ from typing import (
 )
 
 import random
+import time
 
 import torch
 import torch.nn.functional as F
@@ -65,22 +66,46 @@ class Agent(object):
                 (self.__eps_start - self.__eps_final) / self.__eps_decay
             self.__eps = max(self.__eps, self.__eps_final)
 
+        # epsilon greedy
         if self.__r.random() > self.__eps:
+            # print(self.__eps)
             with torch.no_grad():
                 return self.__policy(state).max(1).indices.item()
         return self.__r.randint(0, self.__action_dim - 1)
 
     def learn(self, memory: ReplayMemory, batch_size: int) -> float:
         """learn trains the value network via TD-learning."""
-        state_batch, action_batch, reward_batch, next_batch, done_batch = \
+        # sampling the memory
+        # start = time.time()
+        state_batch, action_batch, reward_batch, next_batch, done_batch, idxs = \
             memory.sample(batch_size)
+        # end = time.time()
 
+        # get the q-values from the policy network for the specific actions
         values = self.__policy(state_batch.float()).gather(1, action_batch)
+
+        # get next q-values from the target network
         values_next = self.__target(next_batch.float()).max(1).values.detach()
+
+        # compute the expected q-values, remove those are done
         expected = (self.__gamma * values_next.unsqueeze(1)) * \
             (1. - done_batch) + reward_batch
-        loss = F.smooth_l1_loss(values, expected)
+        
+        errors = (values - expected).detach().squeeze().tolist()
+        # print(errors.shape)
+        memory.update(idxs, errors)
 
+        loss = F.smooth_l1_loss(values, expected)
+        #loss = loss.mean() * weights
+        #loss = loss.sum() / weights.sum()
+        # loss = F.smooth_l1_loss(values, expected, reduction='none')
+        # loss_mean = loss.mean()
+        # # print(type(loss_mean))
+        # weights = torch.tensor(weights, dtype=torch.float).to(self.__device).float()
+        # # print(type(weights))
+        # loss_weighted = loss_mean * weights
+        # loss = loss_weighted.sum() / weights.sum()
+        
         self.__optimizer.zero_grad()
         loss.backward()
         for param in self.__policy.parameters():
@@ -88,7 +113,8 @@ class Agent(object):
         self.__optimizer.step()
 
         return loss.item()
-
+    def get_eps(self):
+        return self.__eps
     def sync(self) -> None:
         """sync synchronizes the weights from the policy network to the target
         network."""
